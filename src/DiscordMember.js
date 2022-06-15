@@ -2,6 +2,8 @@
 const { stripIndents } = require("common-tags")
 const config = require("./data/client.json")
 const Util = require("./Util")
+const fs = require("fs")
+const path = require("path")
 
 const request = require("request-promise").defaults({
   pool: { maxSockets: Infinity },
@@ -31,6 +33,15 @@ class DiscordMember {
     // Have to do this to prevent circular reference in file requires
     // Gets a reference to DiscordServer so we can run static methods
     DiscordServer = this.discordServer.constructor
+  }
+
+  write(data) {
+    if (!config.metrics) return
+
+    fs.appendFileSync(
+      `${path.join(__dirname, "..", "metrics")}/${this.bot.shard.ids[0]}.txt`,
+      JSON.stringify({ ...data, time: new Date().toISOString() }) + "\n",
+    )
   }
 
   /**
@@ -294,6 +305,13 @@ class DiscordMember {
     const botMember = this.server.me
 
     if (!this.member.manageable || !botMember.hasPermission("MANAGE_ROLES")) {
+      this.write({
+        user: this.id,
+        server: this.server.id,
+        status: "fail",
+        reason: "cant-manage",
+      })
+
       return status({
         status: false,
         error:
@@ -322,6 +340,12 @@ class DiscordMember {
       }
     } catch (e) {
       if (config.loud) console.log(e)
+      this.write({
+        user: this.id,
+        server: this.server.id,
+        status: "fail",
+        reason: "fetch-failed",
+      })
       return status({
         status: false,
         error:
@@ -344,6 +368,12 @@ class DiscordMember {
           })
         } catch (e) {
           if (config.loud) console.log(e)
+          this.write({
+            user: this.id,
+            server: this.server.id,
+            status: "fail",
+            reason: "fetch-fail",
+          })
           return status({
             status: false,
             error: "There was an error while fetching the user's data!",
@@ -371,6 +401,8 @@ class DiscordMember {
 
       status(":dividers:️ Updating your nickname and roles...")
 
+      let changed = false
+
       if (this.discordServer.getSetting("verifiedRole")) {
         const role = this.discordServer.getSetting("verifiedRole")
         if (
@@ -379,6 +411,7 @@ class DiscordMember {
           this.discordServer.canManageRole(role)
         ) {
           try {
+            changed = true
             await this.member.roles.add(role)
           } catch (e) {
             if (config.loud) console.log(e)
@@ -401,6 +434,7 @@ class DiscordMember {
           this.discordServer.canManageRole(role)
         ) {
           try {
+            changed = true
             await this.member.roles.remove(role)
           } catch (e) {
             if (config.loud) console.log(e)
@@ -428,6 +462,7 @@ class DiscordMember {
 
         if (this.member.displayName !== nickname) {
           try {
+            changed = true
             await this.member.setNickname(nickname)
           } catch (e) {
             if (config.loud) console.log(e)
@@ -481,8 +516,10 @@ class DiscordMember {
               if (!this.discordServer.canManageRole(binding.role)) return
 
               if (state === true) {
+                changed = true
                 this.member.roles.add(binding.role).catch((e) => {})
               } else {
+                changed = true
                 this.member.roles.remove(binding.role).catch((e) => {})
               }
             }),
@@ -493,6 +530,12 @@ class DiscordMember {
           await Promise.all(promises)
         } catch (e) {
           console.log(e)
+          this.write({
+            user: this.id,
+            server: this.server.id,
+            status: "fail",
+            reason: "roblox-api-fail",
+          })
           return status({
             status: false,
             nonFatal: true,
@@ -505,6 +548,15 @@ class DiscordMember {
       // Clear verification attempt history
       VerificationAttempts.delete(this.id)
 
+      this.write({
+        user: this.id,
+        server: this.server.id,
+        status: "ok",
+        changed,
+        verified: true,
+        manual: !!options.message,
+      })
+
       return status({
         status: true,
         robloxUsername: data.robloxUsername,
@@ -514,6 +566,7 @@ class DiscordMember {
         robloxDisplayName: data.robloxDisplayName,
       })
     } else {
+      let changed = false
       // Status was not "ok".
       switch (data.errorCode) {
         case 404: {
@@ -525,6 +578,7 @@ class DiscordMember {
               const role = this.discordServer.getSetting("verifiedRemovedRole")
               if (!role || !this.discordServer.canManageRole(role)) return
 
+              changed = true
               await this.member.roles.add(role)
             } catch (e) {}
           }
@@ -554,6 +608,15 @@ class DiscordMember {
               VerificationAttempts.set(this.id, -5)
             }
           }
+
+          this.write({
+            user: this.id,
+            server: this.server.id,
+            status: "ok",
+            changed,
+            verified: false,
+            manual: !!options.message,
+          })
 
           return status({
             status: false,
